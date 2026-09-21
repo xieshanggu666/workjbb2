@@ -8,6 +8,7 @@ import { isFreshTicketOpen, buildFreshTimelineEntry } from '@/utils/freshness'
 import {
   HANDOVER, REVOKE_MODE, isHandoverOpen, handoverSnapshotOf, checkHandoverConflicts
 } from '@/utils/handover'
+import { isDocRetired } from '@/utils/retirement'
 import { GUEST_ID, isGuestUser, ROLE } from '@/utils/permission'
 import { useKbStore } from './kb'
 import { useAuthStore } from './auth'
@@ -88,13 +89,17 @@ export const useHandoverStore = defineStore('handover', () => {
     const nowIso = new Date().toISOString()
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.handovers, async () => {
+    await db.transaction('rw', db.docs, db.handovers, db.retirements, async () => {
       const items = []
       for (const docId of ids) {
         // 事务内重读：归属与交接占用以库中最新数据为准，防止多窗口并发发起
         const doc = await db.docs.get(docId)
         if (!doc) { result = { status: 'missing', docId }; return }
         if (doc.ownerId !== userId) { result = { status: 'denied', docId, title: doc.title }; return }
+        // 已退役文档不再参与责任交接（只读归档）；流转中退役单也先完成/取消，避免两流程交错
+        if (isDocRetired(doc)) { result = { status: 'retired', docId, title: doc.title }; return }
+        const dupRetire = await db.retirements.filter((rt) => rt.docId === docId && rt.status === 'pending').first()
+        if (dupRetire) { result = { status: 'in-retirement', docId, title: doc.title }; return }
         const dup = await db.handovers
           .filter((h) => isHandoverOpen(h) && (h.docIds || []).includes(docId)).first()
         if (dup) { result = { status: 'in-handover', docId, title: doc.title, handover: dup }; return }

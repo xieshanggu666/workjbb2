@@ -1,13 +1,15 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useKbStore } from '@/stores/kb'
 import { useAuthStore } from '@/stores/auth'
 import { useReviewStore } from '@/stores/review'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
+import { useRetirementStore } from '@/stores/retirement'
 import { canViewDoc } from '@/utils/permission'
 import { isFreshTicketOpen } from '@/utils/freshness'
+import { isDocSearchable } from '@/utils/retirement'
 import { tokenize, stripHtml, highlightTitle, highlightText, extractSnippet } from '@/utils/search'
 import { formatDate } from '@/utils/format'
 
@@ -18,6 +20,7 @@ const auth = useAuthStore()
 const reviewStore = useReviewStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
+const retirementStore = useRetirementStore()
 
 const q = ref(route.query.q || '')
 const catFilter = ref('all')
@@ -34,8 +37,11 @@ async function run() {
 const results = computed(() => {
   const kw = tokenize(q.value)
   if (!kw.length) return []
-  // 权限：撤销/到期的授权文档不再可被搜索命中
-  let list = kb.docs.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id)))
+  // 权限：撤销/到期的授权文档不再可被搜索命中；已退役文档停止搜索命中（详情仍可访问）
+  let list = kb.docs.filter((d) =>
+    canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id)) &&
+    isDocSearchable(d, retirementStore.activeRetirementOfDoc(d.id))
+  )
   const textById = {}
   list = list.map((d) => {
     const text = stripHtml(d.body)
@@ -60,6 +66,8 @@ const results = computed(() => {
 function clearAll() { q.value = ''; catFilter.value = 'all'; tagFilter.value = 'all'; router.push({ name: 'search' }) }
 
 watch(() => route.query.q, run, { immediate: true })
+
+onMounted(() => { retirementStore.loadAll() })
 </script>
 
 <template>

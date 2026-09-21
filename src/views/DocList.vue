@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useKbStore } from '@/stores/kb'
 import { useAuthStore } from '@/stores/auth'
 import { useAccessStore } from '@/stores/access'
+import { useRetirementStore } from '@/stores/retirement'
 import DocPill from '@/components/common/DocPill.vue'
 import { formatDate, avatarColor } from '@/utils/format'
 import { canEditContent, canViewDoc, roleLabel } from '@/utils/permission'
@@ -13,6 +14,8 @@ const router = useRouter()
 const kb = useKbStore()
 const auth = useAuthStore()
 const accessStore = useAccessStore()
+const retirementStore = useRetirementStore()
+retirementStore.loadAll()
 
 const viewMode = ref('cards') // cards | list
 
@@ -59,7 +62,7 @@ function ownerName(id) { return kb.catMap[id]?.name }
     <p v-if="route.query.denied" class="notice">当前角色（{{ roleLabel(auth.user?.role) }}）无编辑权限，已切换为浏览模式。</p>
 
     <div v-if="filtered.length" class="cards" :class="viewMode">
-      <div v-for="d in filtered" :key="d.id" class="doc card" @click="router.push('/docs/' + d.id)">
+      <div v-for="d in filtered" :key="d.id" class="doc card" :class="{ retired: retirementStore.activeRetirementOfDoc(d.id) }" @click="router.push('/docs/' + d.id)">
         <div class="doc-title">{{ d.title }}</div>
         <div class="doc-body" v-html="d.body.slice(0, 300)"></div>
         <div class="doc-pills"><DocPill :doc="d" /></div>
@@ -97,6 +100,8 @@ function ownerName(id) { return kb.catMap[id]?.name }
 .cards.list .doc { flex-direction: row; align-items: center; }
 .cards.list .doc-body { display: none; }
 .doc:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+.doc.retired { opacity: 0.62; background: var(--panel-2); }
+.doc.retired:hover { border-color: #94a3b8; }
 .doc-title { font-weight: 600; font-size: 15px; }
 .cards.list .doc-title { flex: 1; }
 .doc-body { color: var(--text-2); font-size: 13px; max-height: 56px; overflow: hidden; }

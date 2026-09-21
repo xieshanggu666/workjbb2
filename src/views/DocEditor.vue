@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useReviewStore } from '@/stores/review'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
+import { useRetirementStore } from '@/stores/retirement'
 import RichEditor from '@/components/doc/RichEditor.vue'
 import { docVersion, fieldLabels } from '@/utils/version'
 import { canEditDoc, ROLE, GUEST_ID } from '@/utils/permission'
@@ -17,6 +18,7 @@ const auth = useAuthStore()
 const reviewStore = useReviewStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
+const retirementStore = useRetirementStore()
 
 const isEdit = computed(() => route.params.id && route.params.id !== 'new')
 const editingDoc = ref(null)
@@ -220,11 +222,13 @@ async function load() {
     if (route.query.freshReview && (!freshTicket.value || freshTicket.value.status === 'submitted')) {
       submitMode.value = 'save'
     }
-    // 编辑权限：拥有者/固定协作成员/持有效限时协作授权；授权撤销或到期后进入即被收回
-    await accessStore.loadAll()
+    // 编辑权限：拥有者/固定协作成员/持有效限时协作授权；授权撤销或到期后进入即被收回；
+    // 已退役文档为只读归档，任何身份都不可再编辑（需先撤销退役）
+    await retirementStore.loadAll()
+    const activeRetirement = d ? retirementStore.activeRetirementOfDoc(d.id) : null
     activeGrant.value = d ? accessStore.grantOf(d.id, auth.user?.id) : null
     accessDenied.value = d
-      ? !canEditDoc(d, { userId: auth.user?.id || GUEST_ID, role: auth.user?.role, grant: activeGrant.value, pendingReview: active })
+      ? !canEditDoc(d, { userId: auth.user?.id || GUEST_ID, role: auth.user?.role, grant: activeGrant.value, pendingReview: active, activeRetirement })
       : false
     // 限时协作授权的只读成员没有「发起评审」通道，强制直接保存模式
     if (activeGrant.value && auth.user?.role !== ROLE.ADMIN && auth.user?.role !== ROLE.EDITOR) {

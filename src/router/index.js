@@ -15,6 +15,7 @@ const routes = [
   { path: '/access', name: 'accessCenter', component: () => import('@/views/AccessCenter.vue'), meta: { title: '访问授权' } },
   { path: '/freshness', name: 'freshnessCenter', component: () => import('@/views/FreshnessCenter.vue'), meta: { title: '知识保鲜' } },
   { path: '/handover', name: 'handoverCenter', component: () => import('@/views/HandoverCenter.vue'), meta: { title: '责任交接' } },
+  { path: '/retirements', name: 'retirementCenter', component: () => import('@/views/RetirementCenter.vue'), meta: { title: '知识退役' } },
   { path: '/qa', name: 'qa', component: () => import('@/views/QAAssistant.vue'), meta: { title: '智能问答' } },
   { path: '/share/:token', name: 'share', component: () => import('@/views/ShareView.vue'), meta: { title: '共享文档' } },
   { path: '/profile', name: 'profile', component: () => import('@/views/ProfileSettings.vue'), meta: { title: '账号与权限' } },

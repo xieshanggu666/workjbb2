@@ -4,6 +4,7 @@
 import { isShareActive, canShareEdit } from './share'
 import { isDocInReview } from './review'
 import { isGrantActive, ACCESS_PERM } from './access'
+import { isDocRetired } from './retirement'
 
 export const ROLE = { ADMIN: 'admin', EDITOR: 'editor', VIEWER: 'viewer' }
 
@@ -30,6 +31,9 @@ export function canEditContent(role) {
 // - 仅凭编辑者角色不能写不属于自己的文档（修复角色级越权）。
 export function canEditDoc(doc, ctx = {}) {
   if (!doc) return false
+  // 已退役文档为只读归档：任何身份（含管理员、共享链接、限时授权）均不可再改正文，
+  // 如需修改须先撤销退役（恢复搜索/引用）后再编辑
+  if (isDocRetired(doc, ctx.activeRetirement)) return false
   const locked = isDocInReview(doc, ctx.pendingReview)
   if (isGuestUser(ctx.userId)) {
     // 评审锁定对访客同样生效，不允许借共享链接在锁定期写入
@@ -50,6 +54,8 @@ export function canEditDoc(doc, ctx = {}) {
 // 限时协作授权与共享链接只授予正文编辑，不授予删除；访客与评审锁定（非管理员）同样拒绝
 export function canDeleteDoc(doc, ctx = {}) {
   if (!doc || isGuestUser(ctx.userId)) return false
+  // 已退役文档保留作历史归档与替代跳转，不允许删除；需删除先撤销退役
+  if (isDocRetired(doc, ctx.activeRetirement)) return false
   if (isDocInReview(doc, ctx.pendingReview) && ctx.role !== ROLE.ADMIN) return false
   if (doc.ownerId === ctx.userId) return true
   if (Array.isArray(doc.editors) && doc.editors.includes(ctx.userId)) return true

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useKbStore } from '@/stores/kb'
 import { useReviewStore } from '@/stores/review'
 import { useFreshnessStore } from '@/stores/freshness'
+import { useRetirementStore } from '@/stores/retirement'
 import { FRESH, isFreshnessEnabled, isFreshTicketOpen, cycleDaysLabel, dueText } from '@/utils/freshness'
 
 const props = defineProps({
@@ -11,6 +12,7 @@ const props = defineProps({
 const kb = useKbStore()
 const reviewStore = useReviewStore()
 const freshnessStore = useFreshnessStore()
+const retirementStore = useRetirementStore()
 
 const catName = computed(() => kb.catMap[props.doc.categoryId]?.name || '未分类')
 const tags = computed(() => (props.doc.tagIds || []).map((id) => kb.tagMap[id]).filter(Boolean))
@@ -38,11 +40,15 @@ const freshTitle = computed(() => {
   return '知识保鲜：' + cycleDaysLabel(props.doc.freshness.cycleDays) + '复核，' + dueText(props.doc, null, freshnessStore.now)
 })
 
+// 知识退役：生效退役的文档只读归档（搜索/问答已停止）
+const retired = computed(() => !!retirementStore.activeRetirementOfDoc(props.doc.id))
+
 const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
 </script>
 
 <template>
   <div class="docbadges">
+    <span v-if="retired" class="pill rt-retired" title="已退役：停止搜索与问答引用，由替代文档承接">🗄 已退役</span>
     <span v-if="inReview" class="pill rv-review">⏳ 评审中</span>
     <span v-else-if="rejectedLast" class="pill rv-rejected">↩ 已驳回</span>
     <span v-if="freshPaused" class="pill fresh-paused" :title="freshTitle">{{ freshLabel }}</span>
@@ -57,6 +63,7 @@ const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
 .docbadges { display: flex; flex-wrap: wrap; gap: 6px; }
 .v { font-size: 11px; }
 .rv-review { background: #b45309; color: #fff; font-size: 11px; }
+.rt-retired { background: #64748b; color: #fff; font-size: 11px; }
 .rv-rejected { background: var(--danger); color: #fff; font-size: 11px; }
 .fresh-paused { background: #0e7490; color: #fff; font-size: 11px; }
 .fresh-ok { background: #ecfeff; color: #0e7490; border: 1px solid #a5f3fc; font-size: 11px; }

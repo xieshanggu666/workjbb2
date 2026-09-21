@@ -8,11 +8,13 @@ import { useReviewStore } from '@/stores/review'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
 import { useHandoverStore } from '@/stores/handover'
+import { useRetirementStore } from '@/stores/retirement'
 import DocPill from '@/components/common/DocPill.vue'
 import MemberSelect from '@/components/common/MemberSelect.vue'
 import ShareDialog from '@/components/doc/ShareDialog.vue'
 import ReviewPanel from '@/components/doc/ReviewPanel.vue'
 import FreshnessPanel from '@/components/doc/FreshnessPanel.vue'
+import RetirementPanel from '@/components/doc/RetirementPanel.vue'
 import AccessApplyCard from '@/components/doc/AccessApplyCard.vue'
 import AccessPanel from '@/components/doc/AccessPanel.vue'
 import { formatFull, formatDate, avatarColor } from '@/utils/format'
@@ -31,6 +33,7 @@ const reviewStore = useReviewStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
 const handoverStore = useHandoverStore()
+const retirementStore = useRetirementStore()
 
 const doc = ref(null)
 const notFound = ref(false)
@@ -130,7 +133,7 @@ async function submitRestore() {
 
 async function refresh() {
   if (!docId.value) return
-  await Promise.all([reviewStore.loadAll(), accessStore.loadAll(), freshnessStore.loadAll()])
+  await Promise.all([reviewStore.loadAll(), accessStore.loadAll(), freshnessStore.loadAll(), retirementStore.loadAll()])
   const d = await kb.getDoc(docId.value)
   if (!d) { notFound.value = true; doc.value = null; return }
   notFound.value = false
@@ -147,9 +150,9 @@ async function refresh() {
 const activeGrant = computed(() => (doc.value ? accessStore.grantOf(doc.value.id, auth.user?.id) : null))
 // 是否可查看详情（随授权记录响应式变化：撤销/到期即时收回）
 const hasViewAccess = computed(() => doc.value ? canViewDoc(doc.value, auth.user?.id, null, activeGrant.value) : false)
-const canEdit = computed(() => canEditDoc(doc.value, { userId: auth.user?.id || GUEST_ID, role: auth.user?.role, grant: activeGrant.value, pendingReview: pendingReview.value }))
-// 删除是破坏性操作：限时协作授权不授予删除权，独立于正文编辑资格判定
-const canDelete = computed(() => canDeleteDoc(doc.value, { userId: auth.user?.id || GUEST_ID, role: auth.user?.role, pendingReview: pendingReview.value }))
+const canEdit = computed(() => canEditDoc(doc.value, { userId: auth.user?.id || GUEST_ID, role: auth.user?.role, grant: activeGrant.value, pendingReview: pendingReview.value, activeRetirement: activeRetirement.value }))
+// 删除是破坏性操作：限时协作授权不授予删除权，独立于正文编辑资格判定；已退役文档不允许删除
+const canDelete = computed(() => canDeleteDoc(doc.value, { userId: auth.user?.id || GUEST_ID, role: auth.user?.role, pendingReview: pendingReview.value, activeRetirement: activeRetirement.value }))
 const isFav = computed(() => engagement.isFavorite(docId.value))
 const comments = computed(() => (doc.value ? kb.commentsOf(doc.value.id) : []))
 const userById = computed(() => Object.fromEntries(auth.users.map((u) => [u.id, u])))
@@ -159,12 +162,22 @@ const reviewLocked = computed(() => !!pendingReview.value && auth.user?.role !==
 const isOwnerOrAdmin = computed(() => doc.value && (auth.user?.role === 'admin' || doc.value.ownerId === auth.user?.id))
 // 责任交接：本文档存在流转中的交接单时提示（交接期间修改将导致批准时校验失败、整体回退）
 const activeHandover = computed(() => (doc.value ? handoverStore.activeHandoverOfDoc(doc.value.id) : null))
+// 知识退役：本文档当前生效退役（已退役则只读，停止搜索/问答，引导至替代文档）
+const activeRetirement = computed(() => (doc.value ? retirementStore.activeRetirementOfDoc(doc.value.id) : null))
 
 async function doDelete() {
   if (!confirm('确定删除该文档？此操作不可恢复。')) return
   const res = await kb.deleteDoc(doc.value.id, auth.user)
   if (res?.status === 'forbidden') {
     alert('你没有删除该文档的权限：仅拥有者、协作成员、管理员或持有效限时协作授权的成员可删除。')
+    return
+  }
+  if (res?.status === 'in-retirement') {
+    alert('该文档存在流转中的退役申请，请先完成审批或撤销退役后再删除。')
+    return
+  }
+  if (res?.status === 'is-replacement') {
+    alert('该文档正作为某篇已退役文档的替代文档，请先撤销对应退役后再删除。')
     return
   }
   router.push('/docs')
@@ -231,6 +244,10 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
       </div>
       <div v-if="activeHandover" class="card handover-banner">
         <span>🤝 本文档正在责任交接中（{{ userById[activeHandover.fromUserId]?.name }} → {{ userById[activeHandover.toUserId]?.name }}）：{{ activeHandover.status === 'pending_confirm' ? '等待接任者确认' : '等待管理员批准' }}，期间请避免修改，否则批准时将因并发变更校验失败而整体回退。</span>
+      </div>
+      <div v-if="activeRetirement" class="card retire-banner">
+        <span>🗄 本文档已退役（{{ userById[activeRetirement.initiatedBy]?.name || activeRetirement.approvedBy }} 发起，{{ userById[activeRetirement.approvedBy] }} 批准）：已停止搜索与问答引用，正文只读保留。</span>
+        <a v-if="kb.docs.find((d) => d.id === activeRetirement.replacementDocId)" class="rt-go" @click="router.push('/docs/' + activeRetirement.replacementDocId)">前往替代文档《{{ activeRetirement.replacementTitle }}》→</a>
       </div>
       <div class="page-head card">
         <div class="title-row">
@@ -328,6 +345,8 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
       <ReviewPanel :doc="doc" />
 
       <FreshnessPanel :doc="doc" />
+
+      <RetirementPanel :doc="doc" />
 
       <!-- 拥有者/管理员：审批访问申请、管理限时授权（撤销到期同步收回四处权限） -->
       <AccessPanel v-if="isOwnerOrAdmin" :doc="doc" />
@@ -441,6 +460,8 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
 .fresh-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #155e75; background: #ecfeff; border-color: #22d3ee; }
 .grant-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #6d28d9; background: #faf5ff; border-color: #a855f7; }
 .handover-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #9a3412; background: #fff7ed; border-color: #fb923c; }
+.retire-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #475569; background: #f8fafc; border-color: #cbd5e1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.retire-banner .rt-go { color: var(--primary); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .owner-his { margin-right: 14px; color: var(--text-2); }
 .owner-his em { font-style: normal; color: var(--text-3); font-size: 12px; }
 .owner-cur { color: var(--text); font-weight: 600; }

@@ -176,16 +176,23 @@ export const useKbStore = defineStore('kb', () => {
   async function deleteDoc(id, currentUser) {
     const userId = currentUser?.id || GUEST_ID
     let result = { status: 'ok' }
-    await db.transaction('rw', db.docs, db.comments, db.shares, db.reviews, db.accessRequests, db.gapTickets, db.freshnessTickets, async () => {
+    await db.transaction('rw', db.docs, db.comments, db.shares, db.reviews, db.accessRequests, db.gapTickets, db.freshnessTickets, db.retirements, async () => {
       const doc = await db.docs.get(id)
       if (!doc) { result = { status: 'missing' }; return }
       const pendingReview = await db.reviews
         .where('docId').equals(id)
         .filter((rv) => rv.status === 'pending').first()
-      if (!canDeleteDoc(doc, { userId, role: currentUser?.role, pendingReview })) {
+      // 知识退役：已退役文档为只读归档不可删除；流转中退役单/作为他人替代文档的也先处理退役再删除，
+      // 避免产生悬挂退役记录或让生效退役失去替代目标
+      const activeRetirement = doc.retirement?.status === 'approved' ? doc.retirement : null
+      const openRetirement = await db.retirements.filter((rt) => rt.docId === id && rt.status === 'pending').first()
+      const usedAsReplacement = await db.retirements.filter((rt) => rt.status === 'approved' && rt.replacementDocId === id).first()
+      if (!canDeleteDoc(doc, { userId, role: currentUser?.role, pendingReview, activeRetirement })) {
         result = { status: 'forbidden' }
         return
       }
+      if (openRetirement) { result = { status: 'in-retirement' }; return }
+      if (usedAsReplacement) { result = { status: 'is-replacement' }; return }
       await db.docs.delete(id)
       await db.comments.where('docId').equals(id).delete()
       await db.shares.where('docId').equals(id).delete()

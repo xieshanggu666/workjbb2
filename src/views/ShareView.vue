@@ -5,6 +5,7 @@ import { db } from '@/db'
 import { useKbStore } from '@/stores/kb'
 import { useAuthStore } from '@/stores/auth'
 import { useReviewStore } from '@/stores/review'
+import { useRetirementStore } from '@/stores/retirement'
 import DocPill from '@/components/common/DocPill.vue'
 import RichEditor from '@/components/doc/RichEditor.vue'
 import { formatFull } from '@/utils/format'
@@ -16,6 +17,7 @@ const route = useRoute()
 const kb = useKbStore()
 const auth = useAuthStore()
 const reviewStore = useReviewStore()
+const retirementStore = useRetirementStore()
 
 const share = ref(null)
 const doc = ref(null)
@@ -43,6 +45,12 @@ const editable = computed(() => canEditDoc(doc.value, {
   pendingReview: reviewStore.pendingReviewOf(doc.value?.id)
 }))
 const reviewLockedShare = computed(() => !!reviewStore.pendingReviewOf(doc.value?.id))
+// 共享文档在分享后被退役：链接（若仍有效）只能查看只读归档，编辑入口随退役关闭，
+// 并提示访客通过知识库登录后查看替代文档（无权限时走访问申请）
+const retiredShare = computed(() => (doc.value ? retirementStore.activeRetirementOfDoc(doc.value.id) : null))
+const replacementOfShare = computed(() =>
+  retiredShare.value ? kb.docs.find((d) => d.id === retiredShare.value.replacementDocId) || null : null
+)
 
 async function resolve(tokenVal) {
   status.value = 'loading'
@@ -50,7 +58,7 @@ async function resolve(tokenVal) {
   doc.value = null
   editing.value = false
   conflict.value = null
-  await reviewStore.loadAll()
+  await Promise.all([reviewStore.loadAll(), retirementStore.loadAll()])
   const s = await db.shares.where('token').equals(tokenVal).first()
   if (!s) { status.value = 'notfound'; return }
   const st = shareStatus(s)
@@ -163,10 +171,20 @@ watch(token, () => resolve(token.value))
         ⏳ 该文档正在评审中，正文暂不可通过共享链接修改；审批通过后将发布新版本。
       </div>
 
+      <div v-if="retiredShare" class="card retired-banner">
+        <div class="rb-line">🗄 该文档已知识退役：已停止搜索与问答引用，当前为只读归档，不可通过共享链接编辑。</div>
+        <div class="rb-sub">
+          替代文档为《{{ retiredShare.replacementTitle }}》。
+          <a v-if="replacementOfShare" :href="'#/docs/' + retiredShare.replacementDocId">登录知识库查看替代文档 →</a>
+          <span v-else>如无访问权限，可登录后在替代文档页申请权限。</span>
+        </div>
+      </div>
+
       <div class="page-head card">
         <div class="title-row">
           <h1 class="title">{{ doc.title }}</h1>
-          <button v-if="editable && !editing" class="btn primary sm" @click="startEdit">✎ 编辑文档</button>
+          <button v-if="editable && !editing && !retiredShare" class="btn primary sm" @click="startEdit">✎ 编辑文档</button>
+          <span v-else-if="retiredShare" class="retired-tag">🗄 已退役 · 只读</span>
         </div>
         <div class="sub">
           <DocPill :doc="doc" />
@@ -219,6 +237,11 @@ watch(token, () => resolve(token.value))
 .share-banner { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; background: var(--primary-weak); border-color: var(--primary); color: var(--primary); font-weight: 500; }
 .owner { font-weight: 400; font-size: 12px; opacity: 0.8; }
 .review-lock-banner { padding: 10px 16px; margin-bottom: 14px; font-size: 13px; color: #b45309; background: #fffbeb; border-color: #f59e0b; }
+.retired-banner { padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #475569; background: #f8fafc; border-color: #cbd5e1; }
+.rb-line { font-weight: 600; }
+.rb-sub { margin-top: 4px; color: var(--text-2); font-size: 12.5px; }
+.rb-sub a { color: var(--primary); font-weight: 600; }
+.retired-tag { font-size: 12px; color: #475569; background: #e2e8f0; border-radius: 999px; padding: 3px 12px; }
 .page-head { padding: 20px 24px; margin-bottom: 14px; }
 .title-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
 .title { margin: 0 0 10px; }

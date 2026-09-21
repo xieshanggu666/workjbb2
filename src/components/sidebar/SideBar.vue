@@ -9,6 +9,7 @@ import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
 import { useHandoverStore } from '@/stores/handover'
+import { useRetirementStore } from '@/stores/retirement'
 import { canEditContent, canViewDoc, roleLabel } from '@/utils/permission'
 import { avatarColor } from '@/utils/format'
 
@@ -22,6 +23,7 @@ const gapStore = useGapStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
 const handoverStore = useHandoverStore()
+const retirementStore = useRetirementStore()
 
 // 侧栏各文档列表统一过权限：授权撤销/到期后标题也不再从最近浏览/收藏/协作入口泄露
 function visible(d) {
@@ -38,6 +40,11 @@ const accessPending = computed(() =>
 // 待我确认的交接 + （管理员）待批准的交接（侧边栏角标）
 const handoverPending = computed(() =>
   handoverStore.pendingCountFor(auth.user?.id, auth.user?.role)
+)
+
+// （管理员）待审批的知识退役申请（侧边栏角标）
+const retirementPending = computed(() =>
+  retirementStore.pendingCountFor(auth.user?.role)
 )
 
 const catCounts = computed(() => {
@@ -87,6 +94,9 @@ function goDoc(id) {
       </div>
       <div class="link" :class="{ on: route.name === 'handoverCenter' }" @click="go('/handover', {})">
         🤝 责任交接<span v-if="handoverPending" class="link-badge">{{ handoverPending }}</span>
+      </div>
+      <div class="link" :class="{ on: route.name === 'retirementCenter' }" @click="go('/retirements', {})">
+        🗄 知识退役<span v-if="retirementPending" class="link-badge">{{ retirementPending }}</span>
       </div>
       <div class="link" :class="{ on: route.name === 'profile' }" @click="go('/profile', {})">⚙️ 账号与权限</div>
     </nav>

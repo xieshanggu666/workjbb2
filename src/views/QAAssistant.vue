@@ -1,13 +1,15 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useKbStore } from '@/stores/kb'
 import { useAuthStore } from '@/stores/auth'
 import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
+import { useRetirementStore } from '@/stores/retirement'
 import { canViewDoc } from '@/utils/permission'
 import { isDocCitable } from '@/utils/freshness'
+import { isDocRetireCitable } from '@/utils/retirement'
 import { extractKeywords, scoreDoc } from '@/utils/qa'
 import { latestRestoreInfo } from '@/utils/version'
 import { gapStatusLabel } from '@/utils/gap'
@@ -21,32 +23,75 @@ const auth = useAuthStore()
 const gapStore = useGapStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
+const retirementStore = useRetirementStore()
 
 const question = ref('')
 const asked = ref('')
 const thinking = ref(false)
 const answered = ref(false)
 const answer = ref('')
+const docById = computed(() => Object.fromEntries(kb.docs.map((d) => [d.id, d])))
 // 提问时刻的原始检索命中（含受限文档正文片段）；展示层按当前授权实时过滤——
 // 授权撤销/到期后，受限引用与正文片段即时从已渲染答案中收回，不依赖重新提问
 const rawCites = ref([])
 const rawRelated = ref([])
+// 提问时刻命中的已退役文档：不作为引用，单独引导用户转看其替代文档
+const retiredHits = ref([])
 const suggestions = ['Vue 如何初始化项目?', 'Dexie 怎么进行查询?', '权限模型里有哪些角色?', '新成员入职流程是什么?']
 
-// 展示用引用/相关条目：随授权记录与到期时钟响应式重算，被收回的受限内容即时消失
+// 展示用引用/相关条目：随授权记录、到期时钟、退役状态响应式重算，被收回/退役的内容即时消失
 function grantOf(d) { return accessStore.grantOf(d.id, auth.user?.id) }
 function freshTicketOf(d) { return freshnessStore.activeTicketOf(d.id) }
-const cites = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, grantOf(c)) && isDocCitable(c, freshTicketOf(c), freshnessStore.now)))
-const related = computed(() => rawRelated.value.filter((d) => canViewDoc(d, auth.user?.id, null, grantOf(d)) && isDocCitable(d, freshTicketOf(d), freshnessStore.now)))
-// 已渲染答案中被收回的引用数（限时授权撤销/到期，或知识保鲜暂停引用导致）
+function retirementOf(d) { return retirementStore.activeRetirementOfDoc(d.id) }
+const citableNow = (d) =>
+  isDocCitable(d, freshTicketOf(d), freshnessStore.now) &&
+  isDocRetireCitable(d, retirementOf(d))
+const cites = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, grantOf(c)) && citableNow(c)))
+const related = computed(() => rawRelated.value.filter((d) => canViewDoc(d, auth.user?.id, null, grantOf(d)) && citableNow(d)))
+// 已渲染答案中被收回的引用数（限时授权撤销/到期、知识保鲜暂停、知识退役导致）
 const revokedCount = computed(() => rawCites.value.length - cites.value.length)
 // 其中因知识保鲜到期暂停引用的篇数（用于给出针对性提示）
 const freshnessPausedCount = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, grantOf(c)) && !isDocCitable(c, freshTicketOf(c), freshnessStore.now)).length)
+// 其中因知识退役停止引用的篇数
+const retiredCount = computed(() => rawCites.value.filter((c) =>
+  canViewDoc(c, auth.user?.id, null, grantOf(c)) &&
+  isDocCitable(c, freshTicketOf(c), freshnessStore.now) &&
+  !isDocRetireCitable(c, retirementOf(c))
+).length)
+// 被退役引用所指向的替代文档（提示用户转看新文档）
+const retiredReplacements = computed(() => {
+  const ids = new Set()
+  const out = []
+  for (const c of rawCites.value) {
+    const rt = retirementOf(c)
+    if (!rt || ids.has(rt.replacementDocId)) continue
+    ids.add(rt.replacementDocId)
+    const rep = docById.value[rt.replacementDocId]
+    if (rep) out.push(rep)
+  }
+  return out
+})
+// 提问命中的退役文档所指向的替代文档（即便退役文档未进入引用列表也能引导）
+const retiredHitReplacements = computed(() => {
+  const ids = new Set()
+  const out = []
+  for (const c of retiredHits.value) {
+    const rt = retirementOf(c)
+    if (!rt || ids.has(rt.replacementDocId)) continue
+    ids.add(rt.replacementDocId)
+    const rep = docById.value[rt.replacementDocId]
+    if (rep) out.push(rep)
+  }
+  return out
+})
 // 答案文案：引用全部被收回时，不再保留「找到相关内容」的原始表述
 const answerText = computed(() => {
   if (revokedCount.value && !cites.value.length) {
     if (freshnessPausedCount.value) {
       return '该问题此前命中的内容已超过复核周期、正在保鲜复核中，问答引用已暂停。待编辑者修订并经管理员复核通过、重算复核周期后会恢复引用。'
+    }
+    if (retiredCount.value) {
+      return '该问题此前命中的内容已被知识退役（停止问答引用），请改看其指定的替代文档；如替代文档无访问权限，可在替代文档页申请权限。'
     }
     return '该问题此前命中的内容来自限时授权文档，授权已撤销或到期，相关正文已同步收回。如需继续查看，请重新申请访问后再提问。'
   }
@@ -57,8 +102,6 @@ const answerText = computed(() => {
 const gapFormOpen = ref(false)
 const gapDetail = ref('')
 
-const docById = computed(() => Object.fromEntries(kb.docs.map((d) => [d.id, d])))
-// 当前问题是否已有未解决工单（创建后/已存在都会命中，避免重复提交）
 const activeTicket = computed(() => (asked.value ? gapStore.activeTicketForQuestion(asked.value) : null))
 // 已解决工单中匹配本问题的答案来源（审批发布后自动回填，此处对提问者可见）
 const resolvedSources = computed(() =>
@@ -89,6 +132,7 @@ function answering() {
   answer.value = ''
   rawCites.value = []
   rawRelated.value = []
+  retiredHits.value = []
   gapFormOpen.value = false
   gapDetail.value = ''
 
@@ -97,34 +141,47 @@ function answering() {
     const tagNames = kb.tags
     // 可见但处于知识保鲜暂停期（周期到点/复核中）的命中：不作为引用来源，仅记录篇数给出提示
     let pausedHits = 0
-    // 权限：撤销/到期的授权文档不再作为问答引用来源；知识保鲜到期/复核中的文档暂停问答引用
+    // 可见但已知识退役的命中：不作为引用来源，单独统计并引导转看替代文档
+    let retiredHitCount = 0
+    // 权限：撤销/到期的授权文档不再作为问答引用来源；知识保鲜到期/复核中、知识退役的文档均不参与问答引用
     const hits = kb.docs
       .filter((d) => canViewDoc(d, auth.user?.id, null, grantOf(d)))
       .map((d) => {
         const bodyText = stripHtml(d.body)
+        const freshOk = isDocCitable(d, freshTicketOf(d), freshnessStore.now)
+        const retireOk = isDocRetireCitable(d, retirementOf(d))
         return {
           doc: d,
           bodyText,
-          citable: isDocCitable(d, freshTicketOf(d), freshnessStore.now),
+          retired: !retireOk,
+          citable: freshOk && retireOk,
+          freshPaused: !freshOk,
           score: scoreDoc(d, keywords, tagNames, bodyText)
         }
       })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
 
-    pausedHits = hits.filter((x) => !x.citable).length
+    pausedHits = hits.filter((x) => x.freshPaused && !x.retired).length
+    retiredHitCount = hits.filter((x) => x.retired).length
+    retiredHits.value = hits.filter((x) => x.retired).map((x) => x.doc)
     const citableHits = hits.filter((x) => x.citable)
 
     const top = citableHits[0]
     if (!top) {
       answered.value = true
-      answer.value = pausedHits
-        ? '与「' + asked.value + '」相关的内容已超过复核周期、正在保鲜复核中，已暂停问答引用。待编辑者修订并经管理员复核通过后会恢复引用，你也可以直接在文档库中查看原文。'
-        : '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
+      answer.value = retiredHitCount
+        ? '与「' + asked.value + '」相关的内容已被知识退役、停止问答引用，请改看其指定的替代文档' + (pausedHits ? '；另有部分文档正在保鲜复核中' : '') + '。你也可以直接在文档库中查看原文。'
+        : pausedHits
+          ? '与「' + asked.value + '」相关的内容已超过复核周期、正在保鲜复核中，已暂停问答引用。待编辑者修订并经管理员复核通过后会恢复引用，你也可以直接在文档库中查看原文。'
+          : '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
       return
     }
 
-    answer.value = '基于知识库检索，我找到与「' + asked.value + '」相关的内容，引用来源如下。' + (citableHits.length > 1 ? ' 我对其归纳后优先展示最相关的 ' + Math.min(citableHits.length, 3) + ' 篇文档。' : '') + (pausedHits ? '（另有 ' + pausedHits + ' 篇相关文档因超过复核周期正在保鲜复核，暂未引用）' : '')
+    const extraNotes = []
+    if (pausedHits) extraNotes.push('另有 ' + pausedHits + ' 篇相关文档因超过复核周期正在保鲜复核，暂未引用')
+    if (retiredHitCount) extraNotes.push(retiredHitCount + ' 篇相关文档已知识退役，已转由替代文档承接')
+    answer.value = '基于知识库检索，我找到与「' + asked.value + '」相关的内容，引用来源如下。' + (citableHits.length > 1 ? ' 我对其归纳后优先展示最相关的 ' + Math.min(citableHits.length, 3) + ' 篇文档。' : '') + (extraNotes.length ? '（' + extraNotes.join('；') + '）' : '')
     rawCites.value = citableHits.slice(0, 3).map((h) => ({
       ...h.doc,
       bodyText: h.bodyText,
@@ -140,6 +197,7 @@ function answering() {
 function useSuggestion(s) { question.value = s; ask(s) }
 
 watch(() => route.query.q, (v) => { if (v) { question.value = v; ask(v) } }, { immediate: true })
+onMounted(() => { retirementStore.loadAll() })
 </script>
 
 <template>
@@ -163,7 +221,20 @@ watch(() => route.query.q, (v) => { if (v) { question.value = v; ask(v) } }, { i
       <p class="a-text">{{ answerText }}</p>
       <div v-if="revokedCount" class="revoked-note">
         <template v-if="freshnessPausedCount">🧊 {{ freshnessPausedCount }} 条引用因超过复核周期正在保鲜复核，问答引用已暂停，复核通过后自动恢复</template>
+        <template v-else-if="retiredCount">🗄 {{ retiredCount }} 条引用的文档已知识退役，问答引用已停止<template v-if="retiredReplacements.length">，请改看替代文档：
+          <span v-for="rep in retiredReplacements" :key="rep.id" class="rep-link" @click="router.push('/docs/' + rep.id)">《{{ rep.title }}》</span>
+        </template></template>
         <template v-else>🔒 {{ revokedCount }} 条引用来自限时授权文档，授权已撤销或到期，相关正文已同步收回</template>
+      </div>
+
+      <!-- 命中的旧文档全部已退役（未进入引用列表）：引导转看替代文档；无权限时替代文档页会引导申请权限 -->
+      <div v-if="answered && !cites.length && retiredHitReplacements.length" class="retired-suggest">
+        <div class="block-title">🗄 命中的旧文档已退役，请改看替代文档</div>
+        <div v-for="rep in retiredHitReplacements" :key="rep.id" class="rel" @click="router.push('/docs/' + rep.id)">
+          <span class="rel-title">《{{ rep.title }}》</span>
+          <span class="rel-tag">{{ kb.catMap[rep.categoryId]?.name }} · 替代文档</span>
+        </div>
+        <div class="rs-hint">如替代文档无访问权限，打开后可直接向其拥有者申请限时阅读/协作权限。</div>
       </div>
 
       <div v-if="cites.length" class="cites">
@@ -243,6 +314,14 @@ watch(() => route.query.q, (v) => { if (v) { question.value = v; ask(v) } }, { i
 .sub-ask { font-weight: 400; font-size: 12px; color: var(--text-3); }
 .a-text { margin: 8px 0 18px; color: var(--text); }
 .revoked-note { margin: -8px 0 14px; padding: 8px 14px; border-radius: 8px; font-size: 13px; color: #b45309; background: #fffbeb; border: 1px solid #f59e0b; }
+.rep-link { color: var(--primary); font-weight: 600; cursor: pointer; margin: 0 4px; }
+.rep-link:hover { text-decoration: underline; }
+.retired-suggest { margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; background: #f8fafc; border: 1px solid #cbd5e1; }
+.retired-suggest .rel { display: flex; justify-content: space-between; padding: 9px 12px; border-radius: 8px; cursor: pointer; background: var(--panel); border: 1px solid var(--border); margin-bottom: 6px; }
+.retired-suggest .rel:hover { border-color: var(--primary); }
+.retired-suggest .rel-title { font-weight: 600; color: var(--primary); }
+.retired-suggest .rel-tag { color: var(--text-3); font-size: 12px; }
+.rs-hint { font-size: 12px; color: var(--text-3); margin-top: 4px; }
 .block-title { font-weight: 600; font-size: 13px; color: var(--text-2); margin: 16px 0 10px; }
 .cites { display: flex; flex-direction: column; gap: 10px; }
 .cite { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; cursor: pointer; }

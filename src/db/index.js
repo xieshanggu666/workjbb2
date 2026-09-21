@@ -58,6 +58,14 @@ export class KnowledgeDB extends Dexie {
     this.version(7).stores({
       handovers: 'id, status, fromUserId, toUserId, createdAt, decidedAt'
     })
+    // v8：知识退役替代
+    // - retirements：负责人发起文档退役并指定替代文档（pending 待管理员审批 → approved 生效 /
+    //   rejected 驳回 / cancelled 发起人撤销 / revoked 退役撤销）；批准后同事务停止旧文档的搜索与
+    //   问答引用、撤销其共享链接（记录保留）、把已解决缺口工单的答案来源改挂替代文档；
+    //   退役可撤销并全程保留记录。doc.retirement（当前生效退役）随记录读写，不单独建索引。
+    this.version(8).stores({
+      retirements: 'id, status, docId, replacementDocId, initiatedBy, decidedBy, createdAt, decidedAt'
+    })
   }
 }
 
