@@ -9,6 +9,7 @@ import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
 import { useHandoverStore } from '@/stores/handover'
+import { useRetireStore } from '@/stores/retire'
 import { canEditContent, canViewDoc, roleLabel } from '@/utils/permission'
 import { avatarColor } from '@/utils/format'
 
@@ -22,6 +23,7 @@ const gapStore = useGapStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
 const handoverStore = useHandoverStore()
+const retireStore = useRetireStore()
 
 // 侧栏各文档列表统一过权限：授权撤销/到期后标题也不再从最近浏览/收藏/协作入口泄露
 function visible(d) {
@@ -39,6 +41,9 @@ const accessPending = computed(() =>
 const handoverPending = computed(() =>
   handoverStore.pendingCountFor(auth.user?.id, auth.user?.role)
 )
+
+// 待管理员审批的退役申请数（侧边栏角标）
+const retirePending = computed(() => retireStore.pendingCountFor(auth.user?.role))
 
 const catCounts = computed(() => {
   const m = {}
@@ -87,6 +92,9 @@ function goDoc(id) {
       </div>
       <div class="link" :class="{ on: route.name === 'handoverCenter' }" @click="go('/handover', {})">
         🤝 责任交接<span v-if="handoverPending" class="link-badge">{{ handoverPending }}</span>
+      </div>
+      <div class="link" :class="{ on: route.name === 'retireCenter' }" @click="go('/retire', {})">
+        🪦 知识退役<span v-if="retirePending" class="link-badge retire-badge">{{ retirePending }}</span>
       </div>
       <div class="link" :class="{ on: route.name === 'profile' }" @click="go('/profile', {})">⚙️ 账号与权限</div>
     </nav>
@@ -157,6 +165,7 @@ function goDoc(id) {
 .link { position: relative; }
 .link-badge { margin-left: 6px; background: var(--danger); color: #fff; font-size: 11px; border-radius: 999px; padding: 0 7px; min-width: 18px; height: 16px; display: inline-grid; place-items: center; }
 .link-badge.fresh-badge { background: #0e7490; }
+.link-badge.retire-badge { background: #64748b; }
 
 .section { margin: 4px 0 14px; }
 .section-title { font-size: 12px; color: var(--text-3); padding: 0 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }

@@ -94,6 +94,8 @@ watch(() => props.open, (v) => { if (v && props.doc) load() })
 
         <div class="sec">
           <div class="sec-label">生成共享链接</div>
+          <div v-if="doc?.retirement" class="hint retired-hint">🪦 文档已退役，不再生成新的共享链接；已有链接已在退役生效时撤销，读者将被引导至替代文档。</div>
+          <template v-else>
           <div class="create-row">
             <select v-model="perm" class="perm">
               <option value="view">仅查看</option>
@@ -104,6 +106,7 @@ watch(() => props.open, (v) => { if (v && props.doc) load() })
             </select>
             <button class="btn primary sm" @click="create">生成链接</button>
           </div>
+          </template>
           <div v-if="shares.length" class="share-list">
             <div v-for="s in shares" :key="s.id" class="share-item" :class="{ off: statusOf(s) !== 'active' }">
               <div class="share-info">
@@ -135,6 +138,7 @@ watch(() => props.open, (v) => { if (v && props.doc) load() })
 .url-row { display: flex; gap: 8px; align-items: center; }
 .url { flex: 1; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hint { color: var(--text-3); font-size: 12px; margin-top: 6px; }
+.retired-hint { color: #475569; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; }
 .create-row { display: flex; gap: 8px; }
 .perm { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
 .share-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }

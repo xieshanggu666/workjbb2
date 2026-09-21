@@ -4,6 +4,7 @@ import { useKbStore } from '@/stores/kb'
 import { useReviewStore } from '@/stores/review'
 import { useFreshnessStore } from '@/stores/freshness'
 import { FRESH, isFreshnessEnabled, isFreshTicketOpen, cycleDaysLabel, dueText } from '@/utils/freshness'
+import { isRetired } from '@/utils/retire'
 
 const props = defineProps({
   doc: { type: Object, required: true }
@@ -14,6 +15,9 @@ const freshnessStore = useFreshnessStore()
 
 const catName = computed(() => kb.catMap[props.doc.categoryId]?.name || '未分类')
 const tags = computed(() => (props.doc.tagIds || []).map((id) => kb.tagMap[id]).filter(Boolean))
+
+// 知识退役：已退役文档退出搜索与问答引用（详情页引导至替代文档）
+const retired = computed(() => isRetired(props.doc))
 
 // 评审中优先以内存中流转的评审单为准（跨文档列表也能实时反映）
 const inReview = computed(() => !!reviewStore.pendingReviewOf(props.doc.id))
@@ -43,6 +47,7 @@ const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
 
 <template>
   <div class="docbadges">
+    <span v-if="retired" class="pill retired" title="本文档已退役，搜索与问答不再引用，详情页可查看替代文档">🪦 已退役</span>
     <span v-if="inReview" class="pill rv-review">⏳ 评审中</span>
     <span v-else-if="rejectedLast" class="pill rv-rejected">↩ 已驳回</span>
     <span v-if="freshPaused" class="pill fresh-paused" :title="freshTitle">{{ freshLabel }}</span>
@@ -55,6 +60,7 @@ const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
 
 <style scoped>
 .docbadges { display: flex; flex-wrap: wrap; gap: 6px; }
+.retired { background: #475569; color: #fff; font-size: 11px; }
 .v { font-size: 11px; }
 .rv-review { background: #b45309; color: #fff; font-size: 11px; }
 .rv-rejected { background: var(--danger); color: #fff; font-size: 11px; }

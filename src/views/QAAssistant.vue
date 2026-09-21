@@ -8,6 +8,7 @@ import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
 import { canViewDoc } from '@/utils/permission'
 import { isDocCitable } from '@/utils/freshness'
+import { isRetired } from '@/utils/retire'
 import { extractKeywords, scoreDoc } from '@/utils/qa'
 import { latestRestoreInfo } from '@/utils/version'
 import { gapStatusLabel } from '@/utils/gap'
@@ -60,9 +61,14 @@ const gapDetail = ref('')
 const docById = computed(() => Object.fromEntries(kb.docs.map((d) => [d.id, d])))
 // 当前问题是否已有未解决工单（创建后/已存在都会命中，避免重复提交）
 const activeTicket = computed(() => (asked.value ? gapStore.activeTicketForQuestion(asked.value) : null))
-// 已解决工单中匹配本问题的答案来源（审批发布后自动回填，此处对提问者可见）
+// 已解决工单中匹配本问题的答案来源（审批发布后自动回填，此处对提问者可见）。
+// 答案来源文档已退役的工单不再回填（退役生效时来源已改指替代文档，此处兜底过滤）
 const resolvedSources = computed(() =>
-  asked.value ? gapStore.resolvedTicketsMatching(extractKeywords(asked.value)).slice(0, 3) : []
+  asked.value
+    ? gapStore.resolvedTicketsMatching(extractKeywords(asked.value))
+      .filter((t) => docById.value[t.docId] && !isRetired(docById.value[t.docId]))
+      .slice(0, 3)
+    : []
 )
 
 async function submitGap() {
@@ -97,7 +103,10 @@ function answering() {
     const tagNames = kb.tags
     // 可见但处于知识保鲜暂停期（周期到点/复核中）的命中：不作为引用来源，仅记录篇数给出提示
     let pausedHits = 0
-    // 权限：撤销/到期的授权文档不再作为问答引用来源；知识保鲜到期/复核中的文档暂停问答引用
+    // 已退役的命中：不再作为引用来源，仅记录篇数给出替代引导提示
+    let retiredHits = 0
+    // 权限：撤销/到期的授权文档不再作为问答引用来源；知识保鲜到期/复核中的文档暂停问答引用；
+    // 已退役文档退出问答引用（详情页仍可读，并引导至替代文档）
     const hits = kb.docs
       .filter((d) => canViewDoc(d, auth.user?.id, null, grantOf(d)))
       .map((d) => {
@@ -105,6 +114,7 @@ function answering() {
         return {
           doc: d,
           bodyText,
+          retired: isRetired(d),
           citable: isDocCitable(d, freshTicketOf(d), freshnessStore.now),
           score: scoreDoc(d, keywords, tagNames, bodyText)
         }
@@ -112,19 +122,22 @@ function answering() {
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
 
-    pausedHits = hits.filter((x) => !x.citable).length
-    const citableHits = hits.filter((x) => x.citable)
+    retiredHits = hits.filter((x) => x.retired).length
+    pausedHits = hits.filter((x) => !x.retired && !x.citable).length
+    const citableHits = hits.filter((x) => !x.retired && x.citable)
 
     const top = citableHits[0]
     if (!top) {
       answered.value = true
       answer.value = pausedHits
         ? '与「' + asked.value + '」相关的内容已超过复核周期、正在保鲜复核中，已暂停问答引用。待编辑者修订并经管理员复核通过后会恢复引用，你也可以直接在文档库中查看原文。'
-        : '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
+        : retiredHits
+          ? '与「' + asked.value + '」相关的 ' + retiredHits + ' 篇文档已退役，不再作为问答引用来源。你可以在搜索结果或文档详情中查看其替代文档。'
+          : '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
       return
     }
 
-    answer.value = '基于知识库检索，我找到与「' + asked.value + '」相关的内容，引用来源如下。' + (citableHits.length > 1 ? ' 我对其归纳后优先展示最相关的 ' + Math.min(citableHits.length, 3) + ' 篇文档。' : '') + (pausedHits ? '（另有 ' + pausedHits + ' 篇相关文档因超过复核周期正在保鲜复核，暂未引用）' : '')
+    answer.value = '基于知识库检索，我找到与「' + asked.value + '」相关的内容，引用来源如下。' + (citableHits.length > 1 ? ' 我对其归纳后优先展示最相关的 ' + Math.min(citableHits.length, 3) + ' 篇文档。' : '') + (pausedHits ? '（另有 ' + pausedHits + ' 篇相关文档因超过复核周期正在保鲜复核，暂未引用）' : '') + (retiredHits ? '（另有 ' + retiredHits + ' 篇相关文档已退役，未再引用，可在其详情页查看替代文档）' : '')
     rawCites.value = citableHits.slice(0, 3).map((h) => ({
       ...h.doc,
       bodyText: h.bodyText,

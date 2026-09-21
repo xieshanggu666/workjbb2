@@ -9,7 +9,7 @@ import DocPill from '@/components/common/DocPill.vue'
 import RichEditor from '@/components/doc/RichEditor.vue'
 import { formatFull } from '@/utils/format'
 import { shareStatus } from '@/utils/share'
-import { canEditDoc, GUEST_ID } from '@/utils/permission'
+import { canEditDoc, canViewDoc, GUEST_ID } from '@/utils/permission'
 import { docVersion } from '@/utils/version'
 
 const route = useRoute()
@@ -20,6 +20,9 @@ const reviewStore = useReviewStore()
 const share = ref(null)
 const doc = ref(null)
 const status = ref('loading')
+// 文档已退役时的替代文档（引导访客前往）
+const replacement = ref(null)
+const replacementViewable = ref(false)
 
 const editing = ref(false)
 const editBody = ref('')
@@ -48,17 +51,29 @@ async function resolve(tokenVal) {
   status.value = 'loading'
   share.value = null
   doc.value = null
+  replacement.value = null
+  replacementViewable.value = false
   editing.value = false
   conflict.value = null
   await reviewStore.loadAll()
   const s = await db.shares.where('token').equals(tokenVal).first()
   if (!s) { status.value = 'notfound'; return }
   const st = shareStatus(s)
-  if (st === 'revoked') { status.value = 'revoked'; return }
-  if (st === 'expired') { status.value = 'expired'; return }
   // 直接读库，保证展示与编辑基线都是最新版本
   const d = await kb.getDocFresh(s.docId)
   if (!d) { status.value = 'notfound'; return }
+  // 文档已退役：共享链接随退役生效被撤销（或之后一律不可用），统一展示退役引导与替代文档
+  if (d.retirement) {
+    doc.value = d
+    const repl = d.retirement.replacementId ? await kb.getDocFresh(d.retirement.replacementId) : null
+    replacement.value = repl
+    // 替代文档对访客可见（公开/团队）时直接引导查看；受限文档引导登录后申请访问权限
+    replacementViewable.value = !!repl && canViewDoc(repl, GUEST_ID, null, null)
+    status.value = 'retired'
+    return
+  }
+  if (st === 'revoked') { status.value = 'revoked'; return }
+  if (st === 'expired') { status.value = 'expired'; return }
   share.value = s
   doc.value = d
   status.value = 'ok'
@@ -152,6 +167,17 @@ watch(token, () => resolve(token.value))
     <div v-else-if="status === 'notfound'" class="empty card"><div class="ico">🚫</div>共享链接无效或文档不存在</div>
     <div v-else-if="status === 'revoked'" class="empty card"><div class="ico">⛔</div>该共享链接已被撤销，如需访问请联系分享者重新生成</div>
     <div v-else-if="status === 'expired'" class="empty card"><div class="ico">⏰</div>该共享链接已过期，如需访问请联系分享者重新生成</div>
+    <div v-else-if="status === 'retired'" class="empty card retired-card">
+      <div class="ico">🪦</div>
+      <div class="rt-title">文档《{{ doc?.title }}》已退役</div>
+      <div class="rt-desc">该文档已退出知识库服务，共享链接同步失效。<template v-if="doc?.retirement?.reason">退役原因：“{{ doc.retirement.reason }}”</template></div>
+      <template v-if="replacement">
+        <div class="rt-repl">替代文档：《{{ replacement.title }}》</div>
+        <a v-if="replacementViewable" class="btn primary" :href="'#/docs/' + replacement.id">前往查看替代文档 →</a>
+        <a v-else class="btn primary" :href="'#/docs/' + replacement.id">替代文档为受限文档，登录后可申请访问权限 →</a>
+      </template>
+      <div v-else class="rt-desc">替代文档已被删除，请联系管理员。</div>
+    </div>
 
     <template v-else-if="doc">
       <div class="share-banner card">
@@ -216,6 +242,10 @@ watch(token, () => resolve(token.value))
 
 <style scoped>
 .share { padding: 20px 0; }
+.retired-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 28px; text-align: center; }
+.rt-title { font-size: 17px; font-weight: 700; }
+.rt-desc { color: var(--text-2); font-size: 13px; max-width: 460px; line-height: 1.7; }
+.rt-repl { color: #15803d; font-weight: 600; font-size: 14px; }
 .share-banner { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; background: var(--primary-weak); border-color: var(--primary); color: var(--primary); font-weight: 500; }
 .owner { font-weight: 400; font-size: 12px; opacity: 0.8; }
 .review-lock-banner { padding: 10px 16px; margin-bottom: 14px; font-size: 13px; color: #b45309; background: #fffbeb; border-color: #f59e0b; }

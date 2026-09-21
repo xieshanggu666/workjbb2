@@ -107,6 +107,8 @@ export function gapTimelineLabel(action) {
     submit: '关联文档送审',
     resolve: '审批通过 · 回填答案来源',
     return: '退回处理',
-    reset: '关联文档已删除'
+    reset: '关联文档已删除',
+    'retire-repoint': '答案来源迁移 · 原文档已退役',
+    'retire-restore': '退役撤销 · 答案来源恢复'
   }[action] || action
 }

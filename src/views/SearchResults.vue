@@ -8,6 +8,7 @@ import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
 import { canViewDoc } from '@/utils/permission'
 import { isFreshTicketOpen } from '@/utils/freshness'
+import { isRetired } from '@/utils/retire'
 import { tokenize, stripHtml, highlightTitle, highlightText, extractSnippet } from '@/utils/search'
 import { formatDate } from '@/utils/format'
 
@@ -34,8 +35,8 @@ async function run() {
 const results = computed(() => {
   const kw = tokenize(q.value)
   if (!kw.length) return []
-  // 权限：撤销/到期的授权文档不再可被搜索命中
-  let list = kb.docs.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id)))
+  // 权限：撤销/到期的授权文档不再可被搜索命中；已退役文档退出搜索结果
+  let list = kb.docs.filter((d) => !isRetired(d) && canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id)))
   const textById = {}
   list = list.map((d) => {
     const text = stripHtml(d.body)
@@ -55,6 +56,24 @@ const results = computed(() => {
     bodyText: textById[d.id],
     snippet: extractSnippet(d.body, kw)
   }))
+})
+
+// 已退役但本可命中的文档：结果中排除，单独给出替代文档引导（最多 3 篇）
+const retiredMatches = computed(() => {
+  const kw = tokenize(q.value)
+  if (!kw.length) return []
+  return kb.docs
+    .filter((d) => isRetired(d) && canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id)))
+    .filter((d) => {
+      const tagNames = (d.tagIds || []).map((id) => kb.tagMap[id]?.name || '')
+      const hay = (d.title + ' ' + stripHtml(d.body) + ' ' + tagNames.join(' ')).toLowerCase()
+      return kw.every((t) => hay.includes(t.toLowerCase()))
+    })
+    .slice(0, 3)
+    .map((d) => ({
+      ...d,
+      replacement: kb.docs.find((x) => x.id === d.retirement?.replacementId) || null
+    }))
 })
 
 function clearAll() { q.value = ''; catFilter.value = 'all'; tagFilter.value = 'all'; router.push({ name: 'search' }) }
@@ -82,6 +101,16 @@ watch(() => route.query.q, run, { immediate: true })
         <span class="count">命中 {{ results.length }} 篇</span>
       </div>
     </header>
+
+    <div v-if="retiredMatches.length" class="retired-hint card">
+      <div class="rh-title">🪦 {{ retiredMatches.length }} 篇已退役文档已从结果中排除</div>
+      <div v-for="d in retiredMatches" :key="d.id" class="rh-item">
+        <span class="rh-doc" @click="router.push('/docs/' + d.id)">《{{ d.title }}》</span>
+        <template v-if="d.replacement">
+          → 替代文档：<span class="rh-repl" @click="router.push('/docs/' + d.replacement.id)">《{{ d.replacement.title }}》</span>
+        </template>
+      </div>
+    </div>
 
     <div v-if="results.length" class="results">
       <div v-for="d in results" :key="d.id" class="result card" @click="router.push('/docs/' + d.id)">
@@ -123,4 +152,10 @@ watch(() => route.query.q, run, { immediate: true })
 .r-cat { color: var(--text-3); font-size: 12px; margin-bottom: 6px; }
 .r-snippet { color: var(--text-2); font-size: 13px; margin-bottom: 10px; }
 .r-tags { display: flex; gap: 6px; }
+.retired-hint { padding: 12px 18px; margin-bottom: 12px; background: #f8fafc; border-color: #cbd5e1; }
+.rh-title { font-size: 13px; font-weight: 600; color: #475569; margin-bottom: 6px; }
+.rh-item { font-size: 13px; color: var(--text-2); padding: 3px 0; }
+.rh-doc { color: var(--text-3); text-decoration: line-through; cursor: pointer; }
+.rh-repl { color: var(--primary); font-weight: 600; cursor: pointer; }
+.rh-repl:hover { text-decoration: underline; }
 </style>

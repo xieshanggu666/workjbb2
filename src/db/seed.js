@@ -371,8 +371,9 @@ const seedReview5 = {
 // v3 文档访问申请演示数据（doc-9 保密文档上的限时阅读/协作授权、撤销与到期留痕）；
 // v4 版本快照回填与 doc-2 恢复演示（v2 误删 + rev-5 恢复评审通过 + v3 恢复边界标记）；
 // v5 知识保鲜演示（doc-8 逾期整改中 / doc-1 修订送审中 / doc-5 复核通过 / doc-6 保鲜运行中）；
-// v6 责任交接演示（ho-1 待确认 / ho-2 已完成含历史归属 / ho-3 并发变更失败回退）
-const SEED_VER = '6'
+// v6 责任交接演示（ho-1 待确认 / ho-2 已完成含历史归属 / ho-3 并发变更失败回退）；
+// v7 知识退役演示（ret-1 已退役：doc-10 → doc-1，共享链接撤销 + 工单来源改指；ret-2 待审批：doc-11 → doc-5）
+const SEED_VER = '7'
 
 async function isSeeded() {
   return (await getMeta('seeded')) === SEED_VER
@@ -747,9 +748,122 @@ async function ensureHandoverSeed() {
   await db.handovers.bulkAdd(handovers)
 }
 
+// ---- 知识退役替代演示（v7 增量种子）----
+// ret-1 已退役：doc-10（老版 Webpack 构建指南）由陈思涵发起、林致远批准退役，替代文档为
+//   doc-1（前端工程初始化，Vite 体系）。生效时同步处理：共享链接 sh-3 被撤销（带退役标记）、
+//   已解决缺口工单 gap-6 的答案来源由 doc-10 改指 doc-1，处理结果随退役单 effect 留档。
+// ret-2 待审批：王子薇发起 doc-11（旧版预订流程）退役，替代文档 doc-5，等待管理员审批。
+const doc10Body = '<h2>老项目构建命令（Webpack 体系）</h2><p>历史项目基于 <b>Webpack 4</b> 构建，常用命令如下。</p><pre><code>npm run build   # 生产构建\nnpm run dev     # 本地调试\nnpm run analyze # 包体积分析</code></pre><blockquote>⚠️ 新统一使用 Vite 脚手架，本文档仅作历史参考，请以《前端工程初始化与目录规范》为准。</blockquote>'
+const doc11Body = '<h2>会议室与工位预订（旧版流程）</h2><ol><li>在行政群里 @行政 登记</li><li>等待人工确认后使用</li></ol><p>该流程已并入《新成员入职指引》的行政服务章节统一维护。</p>'
+
+async function ensureRetireSeed() {
+  // 文档：doc-10 已退役（带退役标记），doc-11 正常（退役审批中）
+  if (!(await db.docs.get('doc-10'))) {
+    await db.docs.add({
+      id: 'doc-10', title: '老版前端构建指南（Webpack）',
+      categoryId: 'c-dev', tagIds: ['t-vue', 't-guide'],
+      visibility: 'public', ownerId: 'u-chen', editors: ['u-chen'],
+      createdAt: ago(400 * d), updatedAt: ago(200 * d),
+      body: doc10Body,
+      publishState: 'published', activeReviewId: null,
+      retirement: {
+        retirementId: 'ret-1', replacementId: 'doc-1',
+        reason: '构建体系已全面迁移 Vite，Webpack 旧指南停止维护，内容以《前端工程初始化与目录规范》为准。',
+        by: 'u-admin', at: ago(10 * d)
+      },
+      versions: [{ version: 1, savedAt: ago(200 * d), savedBy: 'u-chen', note: '初始版本', snapshot: { title: '老版前端构建指南（Webpack）', body: doc10Body, categoryId: 'c-dev', tagIds: ['t-vue', 't-guide'], visibility: 'public' } }]
+    })
+  }
+  if (!(await db.docs.get('doc-11'))) {
+    await db.docs.add({
+      id: 'doc-11', title: '会议室与工位预订流程（旧版）',
+      categoryId: 'c-life', tagIds: ['t-faq'],
+      visibility: 'team', ownerId: 'u-ziwei', editors: ['u-ziwei'],
+      createdAt: ago(300 * d), updatedAt: ago(120 * d),
+      body: doc11Body,
+      publishState: 'published', activeReviewId: null,
+      versions: [{ version: 1, savedAt: ago(120 * d), savedBy: 'u-ziwei', note: '初始版本', snapshot: { title: '会议室与工位预订流程（旧版）', body: doc11Body, categoryId: 'c-life', tagIds: ['t-faq'], visibility: 'team' } }]
+    })
+  }
+
+  // 退役单：ret-1 已批准生效（含 effect 留档），ret-2 待审批
+  if (!(await db.retirements.get('ret-1'))) {
+    await db.retirements.add({
+      id: 'ret-1', docId: 'doc-10', replacementId: 'doc-1',
+      reason: '构建体系已全面迁移 Vite，Webpack 旧指南停止维护，内容以《前端工程初始化与目录规范》为准。',
+      status: 'approved',
+      initiatedBy: 'u-chen', createdAt: ago(12 * d),
+      decidedBy: 'u-admin', decidedAt: ago(10 * d),
+      decideNote: '确认替代文档已覆盖全部命令说明，同意退役。',
+      effect: { revokedShareIds: ['sh-3'], repointedTickets: [{ ticketId: 'gap-6', fromDocId: 'doc-10' }] },
+      revokedBy: null, revokedAt: null, revokeNote: '',
+      timeline: [
+        { action: 'initiate', by: 'u-chen', at: ago(12 * d), note: '构建体系已全面迁移 Vite，Webpack 旧指南停止维护，内容以《前端工程初始化与目录规范》为准。' },
+        { action: 'approve', by: 'u-admin', at: ago(10 * d), note: '确认替代文档已覆盖全部命令说明，同意退役。' }
+      ]
+    })
+  }
+  if (!(await db.retirements.get('ret-2'))) {
+    await db.retirements.add({
+      id: 'ret-2', docId: 'doc-11', replacementId: 'doc-5',
+      reason: '预订流程已并入《新成员入职指引》统一维护，旧流程文档申请退役。',
+      status: 'pending',
+      initiatedBy: 'u-ziwei', createdAt: ago(4 * h),
+      decidedBy: null, decidedAt: null, decideNote: '',
+      effect: null,
+      revokedBy: null, revokedAt: null, revokeNote: '',
+      timeline: [
+        { action: 'initiate', by: 'u-ziwei', at: ago(4 * h), note: '预订流程已并入《新成员入职指引》统一维护，旧流程文档申请退役。' }
+      ]
+    })
+  }
+
+  // 共享链接：sh-3 随 ret-1 生效被撤销（带退役标记，撤销退役时可精确还原）
+  if (!(await db.shares.get('sh-3'))) {
+    await db.shares.add({
+      id: 'sh-3', docId: 'doc-10', token: 'share-webpack-old', permission: 'view',
+      createdBy: 'u-chen', createdAt: ago(30 * d), expiresAt: null,
+      revokedAt: ago(10 * d), revokeReason: 'retired', retirementId: 'ret-1'
+    })
+  }
+
+  // 缺口工单：gap-6 已解决，答案来源随 ret-1 生效由 doc-10 改指 doc-1（rev-8 为当时的解决评审留痕）
+  if (!(await db.reviews.get('rev-8'))) {
+    await db.reviews.add({
+      id: 'rev-8', docId: 'doc-10', status: 'approved',
+      submittedBy: 'u-chen', submittedAt: ago(40 * d),
+      snapshot: { title: '老版前端构建指南（Webpack）', body: doc10Body, categoryId: 'c-dev', tagIds: ['t-vue', 't-guide'], visibility: 'public' },
+      baseVersion: 1,
+      decidedBy: 'u-admin', decidedAt: ago(39 * d), decisionNote: '命令清单补充完整，通过。',
+      timeline: [
+        { action: 'submit', by: 'u-chen', at: ago(40 * d), note: '补写缺口工单：老项目的 Webpack 构建命令有哪些？' },
+        { action: 'approve', by: 'u-admin', at: ago(39 * d), note: '命令清单补充完整，通过。' }
+      ]
+    })
+  }
+  if (!(await db.gapTickets.get('gap-6'))) {
+    await db.gapTickets.add({
+      id: 'gap-6',
+      question: '老项目的 Webpack 构建命令有哪些？',
+      detail: '接手了一个历史项目，找不到构建命令说明。',
+      status: 'resolved',
+      createdBy: 'u-xiaoye', createdAt: ago(45 * d),
+      claimedBy: 'u-chen', claimedAt: ago(41 * d),
+      docId: 'doc-1', reviewId: 'rev-8', groupId: null, resolvedAt: ago(39 * d),
+      timeline: [
+        { action: 'create', by: 'u-xiaoye', at: ago(45 * d), note: '' },
+        { action: 'claim', by: 'u-chen', at: ago(41 * d), note: '' },
+        { action: 'submit', by: 'u-chen', at: ago(40 * d), note: '关联文档《老版前端构建指南（Webpack）》送审' },
+        { action: 'resolve', by: 'u-admin', at: ago(39 * d), note: '审批通过，答案来源已回填' },
+        { action: 'retire-repoint', by: 'u-admin', at: ago(10 * d), note: '答案来源文档《老版前端构建指南（Webpack）》已退役，来源改指替代文档《前端工程初始化与目录规范》' }
+      ]
+    })
+  }
+}
+
 export async function ensureSeeded() {
   if (await isSeeded()) return
-  await db.transaction('rw', db.users, db.categories, db.tags, db.docs, db.comments, db.shares, db.favorites, db.ratings, db.reviews, db.gapTickets, db.accessRequests, db.freshnessTickets, db.handovers, async () => {
+  await db.transaction('rw', db.users, db.categories, db.tags, db.docs, db.comments, db.shares, db.favorites, db.ratings, db.reviews, db.gapTickets, db.accessRequests, db.freshnessTickets, db.handovers, db.retirements, async () => {
     if ((await db.users.count()) === 0) {
       await db.users.bulkAdd(seedUsers)
       await db.categories.bulkAdd(seedCategories)
@@ -766,6 +880,7 @@ export async function ensureSeeded() {
     await ensureRestoreSeed()
     await ensureFreshnessSeed()
     await ensureHandoverSeed()
+    await ensureRetireSeed()
   })
   await setMeta('seeded', SEED_VER)
 }

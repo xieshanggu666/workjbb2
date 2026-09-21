@@ -8,6 +8,7 @@ import { useReviewStore } from '@/stores/review'
 import { useAccessStore } from '@/stores/access'
 import { useFreshnessStore } from '@/stores/freshness'
 import { useHandoverStore } from '@/stores/handover'
+import { useRetireStore } from '@/stores/retire'
 import DocPill from '@/components/common/DocPill.vue'
 import MemberSelect from '@/components/common/MemberSelect.vue'
 import ShareDialog from '@/components/doc/ShareDialog.vue'
@@ -15,12 +16,14 @@ import ReviewPanel from '@/components/doc/ReviewPanel.vue'
 import FreshnessPanel from '@/components/doc/FreshnessPanel.vue'
 import AccessApplyCard from '@/components/doc/AccessApplyCard.vue'
 import AccessPanel from '@/components/doc/AccessPanel.vue'
+import RetireDialog from '@/components/doc/RetireDialog.vue'
 import { formatFull, formatDate, avatarColor } from '@/utils/format'
 import { canEditDoc, canDeleteDoc, canViewDoc, GUEST_ID } from '@/utils/permission'
 import { versionReviewBadge, versionRestoreBadges, canSubmitReview } from '@/utils/review'
 import { freshVersionBadge } from '@/utils/freshness'
 import { diffVersionFields, diffBodyLines, docSnapshot, fieldLabels, versionRangeText } from '@/utils/version'
 import { ACCESS, accessPermLabel, grantExpireText } from '@/utils/access'
+import { isRetired, canInitiateRetire, canCancelRetire, canRevokeRetire } from '@/utils/retire'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +34,7 @@ const reviewStore = useReviewStore()
 const accessStore = useAccessStore()
 const freshnessStore = useFreshnessStore()
 const handoverStore = useHandoverStore()
+const retireStore = useRetireStore()
 
 const doc = ref(null)
 const notFound = ref(false)
@@ -38,6 +42,9 @@ const commentText = ref('')
 const commentMentions = ref([])
 const showVersions = ref(false)
 const shareOpen = ref(false)
+const retireOpen = ref(false)
+// 已提交退役申请的提示（由退役对话框成功回调触发）
+const retireSubmittedNotice = ref(false)
 // 保存时自动合并了其他窗口修改的提示（由编辑器跳转携带）
 const mergeNotice = ref('')
 // 已提交评审的提示（由编辑器「提交评审」跳转携带）
@@ -130,7 +137,7 @@ async function submitRestore() {
 
 async function refresh() {
   if (!docId.value) return
-  await Promise.all([reviewStore.loadAll(), accessStore.loadAll(), freshnessStore.loadAll()])
+  await Promise.all([reviewStore.loadAll(), accessStore.loadAll(), freshnessStore.loadAll(), retireStore.loadAll()])
   const d = await kb.getDoc(docId.value)
   if (!d) { notFound.value = true; doc.value = null; return }
   notFound.value = false
@@ -159,6 +166,63 @@ const reviewLocked = computed(() => !!pendingReview.value && auth.user?.role !==
 const isOwnerOrAdmin = computed(() => doc.value && (auth.user?.role === 'admin' || doc.value.ownerId === auth.user?.id))
 // 责任交接：本文档存在流转中的交接单时提示（交接期间修改将导致批准时校验失败、整体回退）
 const activeHandover = computed(() => (doc.value ? handoverStore.activeHandoverOfDoc(doc.value.id) : null))
+
+// ---- 知识退役 ----
+// 已退役标记（批准生效后挂在文档上）：搜索/问答引用已停止，详情页引导读者前往替代文档
+const retirement = computed(() => (doc.value ? doc.value.retirement || null : null))
+// 生效中的退役单（撤销退役的权限判定与记录关联）
+const retireRecord = computed(() => (retirement.value ? retireStore.byId(retirement.value.retirementId) : null))
+// 待审批的退役申请
+const pendingRetire = computed(() => (doc.value ? retireStore.pendingOf(doc.value.id) : null))
+// 替代文档（可能已被删除）
+const replacementDoc = computed(() => {
+  if (!retirement.value) return null
+  return kb.docs.find((d) => d.id === retirement.value.replacementId) || null
+})
+// 替代文档对当前用户是否可见：不可见时引导申请访问权限
+const replacementViewable = computed(() =>
+  replacementDoc.value
+    ? canViewDoc(replacementDoc.value, auth.user?.id, null, accessStore.grantOf(replacementDoc.value.id, auth.user?.id))
+    : false
+)
+// 发起退役：负责人/管理员，且当前未退役、无待审批申请
+const canRetire = computed(() =>
+  doc.value && !pendingRetire.value &&
+  canInitiateRetire(doc.value, auth.user?.id || GUEST_ID, auth.user?.role)
+)
+const canCancelPendingRetire = computed(() =>
+  pendingRetire.value && canCancelRetire(pendingRetire.value, auth.user?.id || GUEST_ID, auth.user?.role)
+)
+const canRevoke = computed(() =>
+  retireRecord.value && canRevokeRetire(retireRecord.value, auth.user?.id || GUEST_ID, auth.user?.role)
+)
+
+function onRetireSubmitted() {
+  retireSubmittedNotice.value = true
+  setTimeout(() => { retireSubmittedNotice.value = false }, 5000)
+}
+
+async function cancelPendingRetire() {
+  if (!pendingRetire.value) return
+  if (!confirm('确定取消本次退役申请？文档保持原状。')) return
+  const res = await retireStore.cancelRetire(pendingRetire.value.id, auth.user)
+  if (res.status !== 'ok') alert('操作失败：退役单状态已变化')
+}
+
+async function revokeRetirement() {
+  if (!retireRecord.value) return
+  if (!confirm('确定撤销退役？文档将恢复搜索与问答引用，被退役撤销的共享链接与工单答案来源将同步还原。')) return
+  const res = await retireStore.revokeRetire(retireRecord.value.id, '', auth.user)
+  if (res.status === 'ok') {
+    await refresh()
+  } else if (res.status === 'doc-missing') {
+    alert('撤销失败：文档已被删除。')
+  } else if (res.status === 'denied') {
+    alert('仅退役发起人或管理员可撤销退役。')
+  } else {
+    alert('操作失败：退役单状态已变化，请刷新后重试。')
+  }
+}
 
 async function doDelete() {
   if (!confirm('确定删除该文档？此操作不可恢复。')) return
@@ -232,6 +296,30 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
       <div v-if="activeHandover" class="card handover-banner">
         <span>🤝 本文档正在责任交接中（{{ userById[activeHandover.fromUserId]?.name }} → {{ userById[activeHandover.toUserId]?.name }}）：{{ activeHandover.status === 'pending_confirm' ? '等待接任者确认' : '等待管理员批准' }}，期间请避免修改，否则批准时将因并发变更校验失败而整体回退。</span>
       </div>
+      <div v-if="retireSubmittedNotice" class="card retire-submitted-note">
+        <span>🪦 已提交退役申请：管理员批准后本文档将退出搜索与问答引用，共享链接同步撤销，读者将被引导至替代文档。</span>
+        <button class="btn sm ghost" @click="retireSubmittedNotice = false">知道了</button>
+      </div>
+      <!-- 已退役：搜索/问答引用已停止，引导读者前往替代文档；替代文档不可见时引导申请权限 -->
+      <div v-if="retirement" class="card retire-banner">
+        <div class="rb-main">
+          <span>🪦 本文档已退役（{{ userById[retirement.by]?.name || retirement.by }} 于 {{ formatDate(retirement.at) }} 批准），已不再出现在搜索与问答引用中。<template v-if="retirement.reason">退役原因：“{{ retirement.reason }}”</template></span>
+          <span v-if="replacementDoc && replacementViewable" class="rb-repl">
+            替代文档：<a class="rb-link" @click="router.push('/docs/' + replacementDoc.id)">《{{ replacementDoc.title }}》→</a>
+          </span>
+          <span v-else-if="replacementDoc" class="rb-repl locked">
+            🔒 替代文档《{{ replacementDoc.title }}》为受限文档，你可
+            <a class="rb-link" @click="router.push('/docs/' + replacementDoc.id)">前往申请访问权限 →</a>
+          </span>
+          <span v-else class="rb-repl locked">替代文档已被删除，请联系管理员重新指定。</span>
+        </div>
+        <button v-if="canRevoke" class="btn sm" @click="revokeRetirement">↩ 撤销退役</button>
+      </div>
+      <!-- 退役审批中 -->
+      <div v-if="pendingRetire" class="card retire-pending-banner">
+        <span>🪦 本文档已申请退役（{{ userById[pendingRetire.initiatedBy]?.name }} 发起，替代文档：《{{ kb.docs.find((d) => d.id === pendingRetire.replacementId)?.title || '已删除' }}》），等待管理员审批；批准后搜索与问答引用将停止。</span>
+        <button v-if="canCancelPendingRetire" class="btn sm ghost" @click="cancelPendingRetire">取消申请</button>
+      </div>
       <div class="page-head card">
         <div class="title-row">
           <h1 class="title">{{ doc.title }}</h1>
@@ -240,6 +328,7 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
             <button class="btn" @click="shareOpen = true">🔗 分享</button>
             <button v-if="canEdit" class="btn" @click="router.push('/docs/' + doc.id + '/edit')">✎ 编辑</button>
             <button v-else-if="reviewLocked" class="btn" disabled title="评审中，请等待管理员审批">🔒 评审中</button>
+            <button v-if="canRetire" class="btn" title="发起退役：管理员批准后退出搜索与问答引用，并引导读者前往替代文档" @click="retireOpen = true">🪦 退役</button>
             <button v-if="canDelete" class="btn danger" @click="doDelete">🗑 删除</button>
           </div>
         </div>
@@ -350,6 +439,7 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
       </div>
 
       <ShareDialog :open="shareOpen" :doc="doc" @close="shareOpen = false" />
+      <RetireDialog :open="retireOpen" :doc="doc" @close="retireOpen = false" @done="onRetireSubmitted" />
     </template>
   </div>
 </template>
@@ -441,6 +531,14 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
 .fresh-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #155e75; background: #ecfeff; border-color: #22d3ee; }
 .grant-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #6d28d9; background: #faf5ff; border-color: #a855f7; }
 .handover-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #9a3412; background: #fff7ed; border-color: #fb923c; }
+.retire-banner { padding: 12px 18px; margin-bottom: 14px; font-size: 13px; color: #334155; background: #f1f5f9; border-color: #94a3b8; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.retire-banner .rb-main { display: flex; flex-direction: column; gap: 6px; }
+.rb-repl { font-weight: 600; }
+.rb-repl.locked { color: #6d28d9; font-weight: 400; }
+.rb-link { color: var(--primary); cursor: pointer; font-weight: 600; }
+.rb-link:hover { text-decoration: underline; }
+.retire-pending-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #b45309; background: #fffbeb; border-color: #f59e0b; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.retire-submitted-note { padding: 10px 20px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; color: #334155; background: #f1f5f9; border-color: #94a3b8; }
 .owner-his { margin-right: 14px; color: var(--text-2); }
 .owner-his em { font-style: normal; color: var(--text-3); font-size: 12px; }
 .owner-cur { color: var(--text); font-weight: 600; }
